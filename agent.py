@@ -6,7 +6,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from tools import search_ncr
+from tools import search_ncr, query_inspection_data, save_8d_report
 
 load_dotenv()
 
@@ -15,16 +15,20 @@ llm = ChatGoogleGenerativeAI(
     google_api_key=os.getenv("GOOGLE_API_KEY"),
     temperature=0,
 )
-tools = [search_ncr]
+tools = [search_ncr, query_inspection_data, save_8d_report]
 llm_with_tools = llm.bind_tools(tools)
 
 SYSTEM = SystemMessage(content=(
     "You are a senior quality engineer assistant for a tractor plant. "
-    "When the user describes a defect, first search past NCRs. Then give: "
-    "(1) similar past cases with NCR IDs, (2) likely root causes using the "
-    "past evidence, (3) suggested containment and corrective actions. "
-    "Only cite NCRs that appear in tool results. If nothing relevant is "
-    "found, say so instead of guessing."
+    "You have three tools: search_ncr (past NCRs), query_inspection_data "
+    "(SQL on inspection results) and save_8d_report. "
+    "For data questions, query the database; the data runs up to the latest "
+    "date in the table, so use MAX(date) as 'today' when asked about recent periods. "
+    "For defect problems, combine inspection data with similar past NCRs. "
+    "Only cite NCR IDs and numbers that appear in tool results; never invent them. "
+    "If asked for an 8D report, draft it with the sections D1 to D8, based on the "
+    "evidence you found, mark anything unverified as 'to be confirmed', "
+    "then save it with save_8d_report."
 ))
 
 class State(TypedDict):
