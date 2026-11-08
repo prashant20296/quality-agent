@@ -1,5 +1,6 @@
 import os, re, sqlite3
 import chromadb
+import datetime
 from chromadb.utils import embedding_functions
 from langchain_core.tools import tool
 
@@ -45,12 +46,50 @@ def query_inspection_data(sql: str) -> str:
 @tool
 def save_8d_report(filename: str, content: str) -> str:
     """Save a finished 8D report draft as a markdown file in the reports folder.
-    Use this only after the analysis is complete and the user asked for a report.
-    filename: short name without extension, e.g. 'welding_cell2_8d'.
-    content: the full report text in markdown."""
+    Call this ONLY after you have run the data queries and NCR search, and
+    content must be the full report you wrote (sections D1 to D8), never the
+    user's question. filename: short name without extension."""
+    required = ["D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8"]
+    missing = [d for d in required if d not in content]
+    if len(content) < 800 or missing:
+        return ("Report rejected: it must be a full 8D report (at least 800 "
+                "characters) with sections D1 to D8, based on evidence from the "
+                "tools. Missing: " + ", ".join(missing) + ". Investigate first, "
+                "then call this tool again with the complete report.")
     safe = re.sub(r"[^A-Za-z0-9_-]", "_", filename)
     os.makedirs("reports", exist_ok=True)
     path = f"reports/{safe}.md"
     with open(path, "w", encoding="utf-8") as f:
         f.write(content)
     return f"Report saved to {path}"
+
+def _notes_conn():
+    conn = sqlite3.connect("memory.db")
+    conn.execute("CREATE TABLE IF NOT EXISTS notes "
+                 "(id INTEGER PRIMARY KEY, created TEXT, note TEXT)")
+    return conn
+
+@tool
+def remember_note(note: str) -> str:
+    """Save a durable fact that the user explicitly asked you to remember,
+    such as a confirmed root cause, a decision or a plant rule. Never use
+    this for guesses or for anything the user did not ask to save."""
+    conn = _notes_conn()
+    conn.execute("INSERT INTO notes (created, note) VALUES (?, ?)",
+                 (datetime.date.today().isoformat(), note))
+    conn.commit()
+    conn.close()
+    return "Saved."
+
+@tool
+def recall_notes(topic: str) -> str:
+    """Look up previously saved notes by a keyword (e.g. 'Welding Cell 2').
+    Use this at the start of an investigation to check for earlier findings."""
+    conn = _notes_conn()
+    rows = conn.execute(
+        "SELECT created, note FROM notes WHERE note LIKE ? ORDER BY id DESC LIMIT 10",
+        (f"%{topic}%",)).fetchall()
+    conn.close()
+    if not rows:
+        return "No saved notes on that topic."
+    return "\n".join(f"[{d}] {n}" for d, n in rows)

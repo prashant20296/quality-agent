@@ -4,3 +4,4 @@ __pycache__/
 chroma_db/
 inspection.db
 reports/
+memory.db

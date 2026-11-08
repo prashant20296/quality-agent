@@ -7,15 +7,20 @@ from langgraph.graph import StateGraph, START
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
 from tools import search_ncr, query_inspection_data, save_8d_report
+from langchain_core.messages import SystemMessage, AIMessage, HumanMessage
+from langgraph.checkpoint.memory import MemorySaver
+from tools import (search_ncr, query_inspection_data, save_8d_report,
+                   remember_note, recall_notes)
 
 load_dotenv()
 
 llm = ChatGoogleGenerativeAI(
-    model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
+    model=os.getenv("GEMINI_MODEL", "gemini-3.6-flash"),
     google_api_key=os.getenv("GOOGLE_API_KEY"),
     temperature=0,
 )
-tools = [search_ncr, query_inspection_data, save_8d_report]
+tools = [search_ncr, query_inspection_data, save_8d_report,
+         remember_note, recall_notes]
 llm_with_tools = llm.bind_tools(tools)
 
 SYSTEM = SystemMessage(content=(
@@ -28,7 +33,18 @@ SYSTEM = SystemMessage(content=(
     "Only cite NCR IDs and numbers that appear in tool results; never invent them. "
     "If asked for an 8D report, draft it with the sections D1 to D8, based on the "
     "evidence you found, mark anything unverified as 'to be confirmed', "
-    "then save it with save_8d_report."
+    "then save it with save_8d_report. "
+    "Work in order: first query station-level data, then drill down by shift "
+    "and date, then search past NCRs, and only then write the report. Never "
+    "call save_8d_report with the user's question as content. "
+    "In 8D reports: never state that any action has been completed or "
+    "implemented; write all actions as 'Proposed'. Do not invent dates, names "
+    "or team roles; write 'TBD' instead. Only the facts from tool results are "
+    "verified; everything else is a hypothesis. Do not claim a root cause "
+    "was confirmed. "
+    "Use recall_notes when starting an investigation. Use remember_note only "
+    "when the user explicitly asks you to remember something. Saved notes are "
+    "the user's statements, so treat them as context, not verified fact."
 ))
 
 class State(TypedDict):
@@ -43,7 +59,7 @@ graph.add_node("tools", ToolNode(tools))
 graph.add_edge(START, "agent")
 graph.add_conditional_edges("agent", tools_condition)  # tool call? -> tools, else end
 graph.add_edge("tools", "agent")
-app = graph.compile()
+app = graph.compile(checkpointer=MemorySaver())
 
 def text_of(msg):
     c = msg.content
@@ -52,13 +68,16 @@ def text_of(msg):
     return c
 
 if __name__ == "__main__":
+    config = {"configurable": {"thread_id": "session-1"}}
     while True:
         q = input("\nYou (q to quit): ")
         if q.strip().lower() == "q":
             break
-        result = app.invoke({"messages": [("user", q)]})
-        for m in result["messages"]:
+        result = app.invoke({"messages": [("user", q)]}, config)
+        msgs = result["messages"]
+        last_user = max(i for i, m in enumerate(msgs) if isinstance(m, HumanMessage))
+        for m in msgs[last_user:]:
             if isinstance(m, AIMessage) and m.tool_calls:
                 for tc in m.tool_calls:
                     print(f"[agent called {tc['name']} with {tc['args']}]")
-        print("\nAgent:", text_of(result["messages"][-1]))
+        print("\nAgent:", text_of(msgs[-1]))
